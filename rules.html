@@ -1,0 +1,353 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Oneness Globe rules</title>
+<style>body{font-family:system-ui,sans-serif;background:#F2F6FD;margin:0;padding:18px;color:#0E1B3D}
+.card{background:#fff;border-radius:20px;padding:18px;box-shadow:0 6px 18px rgba(10,77,184,.08)}
+button{width:100%;height:56px;border:0;border-radius:16px;background:#1877F2;color:#fff;font-size:18px;font-weight:700;margin:12px 0}
+a.btn{display:block;text-align:center;line-height:56px;height:56px;border-radius:16px;background:#0A4DB8;color:#fff;font-weight:700;text-decoration:none;font-size:17px}
+ol{padding-left:20px;line-height:1.7} pre{font-size:10px;max-height:160px;overflow:auto;background:#F6F9FF;padding:8px;border-radius:10px}
+#ok{color:#1a8f4f;font-weight:700;text-align:center}</style></head><body><div class="card">
+<h2>Firebase rules</h2>
+<ol><li>Tap <b>Copy rules</b></li><li>Tap <b>Open Firebase Rules</b></li><li>In the box: long-press → <b>Select all</b> → <b>Paste</b></li><li>Tap <b>Publish</b></li></ol>
+<button onclick="navigator.clipboard.writeText(document.getElementById('r').textContent).then(()=>{document.getElementById('ok').textContent='✓ Copied! Now open Firebase.'})">Copy rules</button>
+<p id="ok"></p>
+<a class="btn" href="https://console.firebase.google.com/project/oneness-globe/firestore/rules">Open Firebase Rules</a>
+<p style="color:#66708A;font-size:13px">Last line should end with <b>test_timesync</b>.</p>
+<pre id="r">rules_version = &#x27;2&#x27;;
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- helpers ----------
+    function signedIn() { return request.auth != null; }
+    function userDoc() { return /databases/$(database)/documents/users/$(request.auth.uid); }
+    function me() { return get(userDoc()).data; }
+    function active() { return signedIn() &amp;&amp; exists(userDoc()) &amp;&amp; me().active == true; }
+    function isFull() { return active() &amp;&amp; me().role == &#x27;super&#x27;; }
+    function isAdmin() { return active() &amp;&amp; (me().role == &#x27;super&#x27; || me().role == &#x27;restricted&#x27;); }
+    function can(p) { return isFull() || (active() &amp;&amp; me().role == &#x27;restricted&#x27; &amp;&amp; p in me().perms); }
+    function notSetUp() { return !exists(/databases/$(database)/documents/meta/setup); }
+    function own() { return signedIn() &amp;&amp; request.resource.data.userId == request.auth.uid; }
+    function isOwner() { return signedIn() &amp;&amp; resource.data.userId == request.auth.uid; }
+    function onlyStatusChange() {
+      return request.resource.data.diff(resource.data).affectedKeys()
+        .hasOnly([&#x27;status&#x27;, &#x27;decidedBy&#x27;, &#x27;decidedAt&#x27;]);
+    }
+
+    // ---------- setup &amp; settings ----------
+    match /meta/setup { allow read: if true; allow create: if signedIn() &amp;&amp; notSetUp(); }
+    match /meta/settings {
+      allow read: if active();
+      allow create: if signedIn() &amp;&amp; notSetUp();
+      allow update: if isFull();
+    }
+    match /meta/counters {
+      allow read, write: if isAdmin() || (signedIn() &amp;&amp; notSetUp());
+    }
+
+    // ---------- staff ----------
+    match /users/{uid} {
+      allow read: if isAdmin() || request.auth.uid == uid;
+      allow create: if
+        (request.auth.uid == uid &amp;&amp; notSetUp() &amp;&amp; request.resource.data.role == &#x27;super&#x27;)
+        || isFull()
+        || (can(&#x27;manage_workers&#x27;) &amp;&amp; request.resource.data.role == &#x27;worker&#x27;);
+      allow update: if
+        // full-access admins can never be demoted or disabled
+        (resource.data.role != &#x27;super&#x27;
+           || (request.resource.data.role == &#x27;super&#x27; &amp;&amp; request.resource.data.active == true))
+        &amp;&amp; request.resource.data.role == resource.data.role
+        &amp;&amp; (isFull()
+            || (can(&#x27;manage_workers&#x27;) &amp;&amp; resource.data.role == &#x27;worker&#x27;
+                &amp;&amp; !request.resource.data.diff(resource.data).affectedKeys().hasAny([&#x27;perms&#x27;, &#x27;role&#x27;])));
+      allow delete: if false;
+    }
+    match /salaries/{uid} {
+      allow read: if can(&#x27;view_salary&#x27;) || request.auth.uid == uid;
+      allow write: if can(&#x27;view_salary&#x27;);
+    }
+
+    // ---------- dealers &amp; doctors ----------
+    match /dealers/{id} { allow read: if active(); allow write: if can(&#x27;manage_dealers&#x27;); }
+    match /doctors/{id} { allow read: if active(); allow write: if can(&#x27;manage_doctors&#x27;); }
+
+    // ---------- duty records &amp; photos (cannot be edited or deleted) ----------
+    match /events/{id} {
+      allow read: if isAdmin() || isOwner();
+      allow create: if active() &amp;&amp; own();
+      allow update, delete: if false;
+    }
+    match /photos/{id} {
+      allow read: if isAdmin() || isOwner();
+      allow create: if active() &amp;&amp; own();
+      allow update, delete: if false;
+    }
+    match /lastloc/{uid} {
+      allow read: if isAdmin() || request.auth.uid == uid;
+      allow write: if active() &amp;&amp; request.auth.uid == uid;
+    }
+
+    // ---------- travel fares &amp; leave ----------
+    match /expenses/{id} {
+      allow read: if isAdmin() || isOwner();
+      allow create: if active() &amp;&amp; own() &amp;&amp; request.resource.data.status == &#x27;pending&#x27;;
+      allow update: if can(&#x27;approve_ta&#x27;) &amp;&amp; onlyStatusChange() &amp;&amp; resource.data.userId != request.auth.uid;
+      allow delete: if false;
+    }
+    match /leaves/{id} {
+      allow read: if isAdmin() || isOwner();
+      allow create: if active() &amp;&amp; own() &amp;&amp; request.resource.data.status == &#x27;pending&#x27;;
+      allow update: if can(&#x27;approve_leave&#x27;) &amp;&amp; onlyStatusChange() &amp;&amp; resource.data.userId != request.auth.uid;
+      allow delete: if false;
+    }
+
+    // ---------- activity log (only full-access admins can read; nobody can edit) ----------
+    match /logs/{id} {
+      allow read: if isFull();
+      allow create: if signedIn() &amp;&amp; request.resource.data.by == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    // ---------- products, depots, stock, promotions ----------
+    match /products/{id} { allow read: if active(); allow write: if can(&#x27;manage_products&#x27;); }
+    match /depots/{id} { allow read: if active(); allow write: if can(&#x27;manage_products&#x27;); }
+    match /promotions/{id} { allow read: if active(); allow write: if can(&#x27;manage_products&#x27;); }
+    match /stock/{id} {
+      allow read: if active();
+      allow write: if can(&#x27;manage_products&#x27;) || can(&#x27;approve_orders&#x27;);
+    }
+
+    // ---------- orders (MPO submits; review -&gt; final approval) ----------
+    match /orders/{id} {
+      allow read: if isAdmin() || isOwner();
+      allow create: if active() &amp;&amp; own() &amp;&amp; request.resource.data.status == &#x27;pending&#x27;;
+      allow update: if request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly([&#x27;status&#x27;, &#x27;decidedBy&#x27;, &#x27;decidedAt&#x27;, &#x27;history&#x27;])
+        &amp;&amp; ((can(&#x27;review_orders&#x27;) &amp;&amp; resource.data.status == &#x27;pending&#x27;
+              &amp;&amp; request.resource.data.status in [&#x27;reviewed&#x27;, &#x27;rejected&#x27;])
+          || (can(&#x27;approve_orders&#x27;) &amp;&amp; resource.data.status in [&#x27;pending&#x27;, &#x27;reviewed&#x27;]
+              &amp;&amp; request.resource.data.status in [&#x27;approved&#x27;, &#x27;rejected&#x27;]));
+      allow delete: if false;
+    }
+
+    // ---------- dues, collections, cash handover ----------
+    match /dues/{id} {
+      allow read: if active();
+      allow write: if can(&#x27;approve_orders&#x27;) || can(&#x27;approve_collections&#x27;);
+    }
+    match /collections/{id} {
+      allow read: if isAdmin() || isOwner();
+      allow create: if active() &amp;&amp; own() &amp;&amp; request.resource.data.status == &#x27;pending&#x27;;
+      allow update: if can(&#x27;approve_collections&#x27;) &amp;&amp; onlyStatusChange();
+      allow delete: if false;
+    }
+    match /handovers/{id} {
+      allow read: if isAdmin() || isOwner();
+      allow create: if active() &amp;&amp; own() &amp;&amp; request.resource.data.status == &#x27;pending&#x27;;
+      allow update: if can(&#x27;approve_collections&#x27;) &amp;&amp; onlyStatusChange();
+      allow delete: if false;
+    }
+
+    // ---------- targets &amp; tasks ----------
+    match /targets/{id} {
+      allow read: if isAdmin() || isOwner();
+      allow write: if can(&#x27;manage_targets&#x27;);
+    }
+    match /tasks/{id} {
+      allow read: if isAdmin() || isOwner();
+      allow create, delete: if can(&#x27;manage_tasks&#x27;);
+      allow update: if can(&#x27;manage_tasks&#x27;)
+        || (isOwner() &amp;&amp; request.resource.data.diff(resource.data).affectedKeys().hasOnly(
+             [&#x27;status&#x27;, &#x27;startedAt&#x27;, &#x27;completedAt&#x27;, &#x27;report&#x27;, &#x27;startedLat&#x27;, &#x27;startedLng&#x27;, &#x27;completedLat&#x27;, &#x27;completedLng&#x27;]));
+    }
+
+    // ---------- farmers ----------
+    match /farmers/{id} {
+      allow read, create, update: if active();
+      allow delete: if false;
+    }
+
+    // ---------- account requests (approved only by Full-access Admins) ----------
+    match /requests/{uid} {
+      allow create: if signedIn() &amp;&amp; request.auth.uid == uid
+        &amp;&amp; request.resource.data.status == &#x27;pending&#x27;
+        &amp;&amp; request.resource.data.id == uid
+        &amp;&amp; request.resource.data.wantRole in [&#x27;staff&#x27;, &#x27;admin&#x27;];
+      allow read: if isFull() || (signedIn() &amp;&amp; request.auth.uid == uid);
+      allow update: if isFull();
+      allow delete: if false;
+    }
+
+    // ---------- server time check ----------
+    match /timesync/{uid} {
+      allow read, write: if signedIn() &amp;&amp; request.auth.uid == uid;
+    }
+
+    // =================== TEST COPY (separate test_ data) ===================
+
+
+    // ---------- helpers ----------
+    function t_signedIn() { return request.auth != null; }
+    function t_userDoc() { return /databases/$(database)/documents/test_users/$(request.auth.uid); }
+    function t_me() { return get(t_userDoc()).data; }
+    function t_active() { return t_signedIn() &amp;&amp; exists(t_userDoc()) &amp;&amp; t_me().active == true; }
+    function t_isFull() { return t_active() &amp;&amp; t_me().role == &#x27;super&#x27;; }
+    function t_isAdmin() { return t_active() &amp;&amp; (t_me().role == &#x27;super&#x27; || t_me().role == &#x27;restricted&#x27;); }
+    function t_can(p) { return t_isFull() || (t_active() &amp;&amp; t_me().role == &#x27;restricted&#x27; &amp;&amp; p in t_me().perms); }
+    function t_notSetUp() { return !exists(/databases/$(database)/documents/test_meta/setup); }
+    function t_own() { return t_signedIn() &amp;&amp; request.resource.data.userId == request.auth.uid; }
+    function t_isOwner() { return t_signedIn() &amp;&amp; resource.data.userId == request.auth.uid; }
+    function t_onlyStatusChange() {
+      return request.resource.data.diff(resource.data).affectedKeys()
+        .hasOnly([&#x27;status&#x27;, &#x27;decidedBy&#x27;, &#x27;decidedAt&#x27;]);
+    }
+
+    // ---------- setup &amp; settings ----------
+    match /test_meta/setup { allow read: if true; allow create: if t_signedIn() &amp;&amp; t_notSetUp(); }
+    match /test_meta/settings {
+      allow read: if t_active();
+      allow create: if t_signedIn() &amp;&amp; t_notSetUp();
+      allow update: if t_isFull();
+    }
+    match /test_meta/counters {
+      allow read, write: if t_isAdmin() || (t_signedIn() &amp;&amp; t_notSetUp());
+    }
+
+    // ---------- staff ----------
+    match /test_users/{uid} {
+      allow read: if t_isAdmin() || request.auth.uid == uid;
+      allow create: if
+        (request.auth.uid == uid &amp;&amp; t_notSetUp() &amp;&amp; request.resource.data.role == &#x27;super&#x27;)
+        || t_isFull()
+        || (t_can(&#x27;manage_workers&#x27;) &amp;&amp; request.resource.data.role == &#x27;worker&#x27;);
+      allow update: if
+        // full-access admins can never be demoted or disabled
+        (resource.data.role != &#x27;super&#x27;
+           || (request.resource.data.role == &#x27;super&#x27; &amp;&amp; request.resource.data.active == true))
+        &amp;&amp; request.resource.data.role == resource.data.role
+        &amp;&amp; (t_isFull()
+            || (t_can(&#x27;manage_workers&#x27;) &amp;&amp; resource.data.role == &#x27;worker&#x27;
+                &amp;&amp; !request.resource.data.diff(resource.data).affectedKeys().hasAny([&#x27;perms&#x27;, &#x27;role&#x27;])));
+      allow delete: if false;
+    }
+    match /test_salaries/{uid} {
+      allow read: if t_can(&#x27;view_salary&#x27;) || request.auth.uid == uid;
+      allow write: if t_can(&#x27;view_salary&#x27;);
+    }
+
+    // ---------- dealers &amp; doctors ----------
+    match /test_dealers/{id} { allow read: if t_active(); allow write: if t_can(&#x27;manage_dealers&#x27;); }
+    match /test_doctors/{id} { allow read: if t_active(); allow write: if t_can(&#x27;manage_doctors&#x27;); }
+
+    // ---------- duty records &amp; photos (cannot be edited or deleted) ----------
+    match /test_events/{id} {
+      allow read: if t_isAdmin() || t_isOwner();
+      allow create: if t_active() &amp;&amp; t_own();
+      allow update, delete: if false;
+    }
+    match /test_photos/{id} {
+      allow read: if t_isAdmin() || t_isOwner();
+      allow create: if t_active() &amp;&amp; t_own();
+      allow update, delete: if false;
+    }
+    match /test_lastloc/{uid} {
+      allow read: if t_isAdmin() || request.auth.uid == uid;
+      allow write: if t_active() &amp;&amp; request.auth.uid == uid;
+    }
+
+    // ---------- travel fares &amp; leave ----------
+    match /test_expenses/{id} {
+      allow read: if t_isAdmin() || t_isOwner();
+      allow create: if t_active() &amp;&amp; t_own() &amp;&amp; request.resource.data.status == &#x27;pending&#x27;;
+      allow update: if t_can(&#x27;approve_ta&#x27;) &amp;&amp; t_onlyStatusChange() &amp;&amp; resource.data.userId != request.auth.uid;
+      allow delete: if false;
+    }
+    match /test_leaves/{id} {
+      allow read: if t_isAdmin() || t_isOwner();
+      allow create: if t_active() &amp;&amp; t_own() &amp;&amp; request.resource.data.status == &#x27;pending&#x27;;
+      allow update: if t_can(&#x27;approve_leave&#x27;) &amp;&amp; t_onlyStatusChange() &amp;&amp; resource.data.userId != request.auth.uid;
+      allow delete: if false;
+    }
+
+    // ---------- activity log (only full-access admins can read; nobody can edit) ----------
+    match /test_logs/{id} {
+      allow read: if t_isFull();
+      allow create: if t_signedIn() &amp;&amp; request.resource.data.by == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    // ---------- products, depots, stock, promotions ----------
+    match /test_products/{id} { allow read: if t_active(); allow write: if t_can(&#x27;manage_products&#x27;); }
+    match /test_depots/{id} { allow read: if t_active(); allow write: if t_can(&#x27;manage_products&#x27;); }
+    match /test_promotions/{id} { allow read: if t_active(); allow write: if t_can(&#x27;manage_products&#x27;); }
+    match /test_stock/{id} {
+      allow read: if t_active();
+      allow write: if t_can(&#x27;manage_products&#x27;) || t_can(&#x27;approve_orders&#x27;);
+    }
+
+    // ---------- orders (MPO submits; review -&gt; final approval) ----------
+    match /test_orders/{id} {
+      allow read: if t_isAdmin() || t_isOwner();
+      allow create: if t_active() &amp;&amp; t_own() &amp;&amp; request.resource.data.status == &#x27;pending&#x27;;
+      allow update: if request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly([&#x27;status&#x27;, &#x27;decidedBy&#x27;, &#x27;decidedAt&#x27;, &#x27;history&#x27;])
+        &amp;&amp; ((t_can(&#x27;review_orders&#x27;) &amp;&amp; resource.data.status == &#x27;pending&#x27;
+              &amp;&amp; request.resource.data.status in [&#x27;reviewed&#x27;, &#x27;rejected&#x27;])
+          || (t_can(&#x27;approve_orders&#x27;) &amp;&amp; resource.data.status in [&#x27;pending&#x27;, &#x27;reviewed&#x27;]
+              &amp;&amp; request.resource.data.status in [&#x27;approved&#x27;, &#x27;rejected&#x27;]));
+      allow delete: if false;
+    }
+
+    // ---------- dues, collections, cash handover ----------
+    match /test_dues/{id} {
+      allow read: if t_active();
+      allow write: if t_can(&#x27;approve_orders&#x27;) || t_can(&#x27;approve_collections&#x27;);
+    }
+    match /test_collections/{id} {
+      allow read: if t_isAdmin() || t_isOwner();
+      allow create: if t_active() &amp;&amp; t_own() &amp;&amp; request.resource.data.status == &#x27;pending&#x27;;
+      allow update: if t_can(&#x27;approve_collections&#x27;) &amp;&amp; t_onlyStatusChange();
+      allow delete: if false;
+    }
+    match /test_handovers/{id} {
+      allow read: if t_isAdmin() || t_isOwner();
+      allow create: if t_active() &amp;&amp; t_own() &amp;&amp; request.resource.data.status == &#x27;pending&#x27;;
+      allow update: if t_can(&#x27;approve_collections&#x27;) &amp;&amp; t_onlyStatusChange();
+      allow delete: if false;
+    }
+
+    // ---------- targets &amp; tasks ----------
+    match /test_targets/{id} {
+      allow read: if t_isAdmin() || t_isOwner();
+      allow write: if t_can(&#x27;manage_targets&#x27;);
+    }
+    match /test_tasks/{id} {
+      allow read: if t_isAdmin() || t_isOwner();
+      allow create, delete: if t_can(&#x27;manage_tasks&#x27;);
+      allow update: if t_can(&#x27;manage_tasks&#x27;)
+        || (t_isOwner() &amp;&amp; request.resource.data.diff(resource.data).affectedKeys().hasOnly(
+             [&#x27;status&#x27;, &#x27;startedAt&#x27;, &#x27;completedAt&#x27;, &#x27;report&#x27;, &#x27;startedLat&#x27;, &#x27;startedLng&#x27;, &#x27;completedLat&#x27;, &#x27;completedLng&#x27;]));
+    }
+
+    // ---------- farmers ----------
+    match /test_farmers/{id} {
+      allow read, create, update: if t_active();
+      allow delete: if false;
+    }
+
+    // ---------- account requests (approved only by Full-access Admins) ----------
+    match /test_requests/{uid} {
+      allow create: if t_signedIn() &amp;&amp; request.auth.uid == uid
+        &amp;&amp; request.resource.data.status == &#x27;pending&#x27;
+        &amp;&amp; request.resource.data.id == uid
+        &amp;&amp; request.resource.data.wantRole in [&#x27;staff&#x27;, &#x27;admin&#x27;];
+      allow read: if t_isFull() || (t_signedIn() &amp;&amp; request.auth.uid == uid);
+      allow update: if t_isFull();
+      allow delete: if false;
+    }
+
+    // ---------- server time check ----------
+    match /test_timesync/{uid} {
+      allow read, write: if t_signedIn() &amp;&amp; request.auth.uid == uid;
+    }
+  }
+}
+</pre></div></body></html>
