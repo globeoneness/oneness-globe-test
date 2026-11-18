@@ -176,6 +176,15 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // ---------- fake-location flags ----------
+    match /flags/{id} {
+      allow read: if isAdmin() || isOwner();
+      allow create: if active() &amp;&amp; own() &amp;&amp; request.resource.data.cleared == false;
+      allow update: if (isFull() || can(&#x27;manage_workers&#x27;))
+        &amp;&amp; request.resource.data.diff(resource.data).affectedKeys().hasOnly([&#x27;cleared&#x27;, &#x27;clearedBy&#x27;]);
+      allow delete: if false;
+    }
+
     // ---------- server time check ----------
     match /timesync/{uid} {
       allow read, write: if signedIn() &amp;&amp; request.auth.uid == uid;
@@ -341,6 +350,15 @@ service cloud.firestore {
         &amp;&amp; request.resource.data.wantRole in [&#x27;staff&#x27;, &#x27;admin&#x27;];
       allow read: if t_isFull() || (t_signedIn() &amp;&amp; request.auth.uid == uid);
       allow update: if t_isFull();
+      allow delete: if false;
+    }
+
+    // ---------- fake-location flags ----------
+    match /test_flags/{id} {
+      allow read: if t_isAdmin() || t_isOwner();
+      allow create: if t_active() &amp;&amp; t_own() &amp;&amp; request.resource.data.cleared == false;
+      allow update: if (t_isFull() || t_can(&#x27;manage_workers&#x27;))
+        &amp;&amp; request.resource.data.diff(resource.data).affectedKeys().hasOnly([&#x27;cleared&#x27;, &#x27;clearedBy&#x27;]);
       allow delete: if false;
     }
 
