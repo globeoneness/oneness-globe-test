@@ -185,6 +185,12 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // ---------- one-shot location fix from the native app (for check-in) ----------
+    match /livefix/{uid} {
+      allow read: if isAdmin() || request.auth.uid == uid;
+      allow write: if active() &amp;&amp; request.auth.uid == uid;
+    }
+
     // ---------- server time check ----------
     match /timesync/{uid} {
       allow read, write: if signedIn() &amp;&amp; request.auth.uid == uid;
@@ -360,6 +366,12 @@ service cloud.firestore {
       allow update: if (t_isFull() || t_can(&#x27;manage_workers&#x27;))
         &amp;&amp; request.resource.data.diff(resource.data).affectedKeys().hasOnly([&#x27;cleared&#x27;, &#x27;clearedBy&#x27;]);
       allow delete: if false;
+    }
+
+    // ---------- one-shot location fix from the native app (for check-in) ----------
+    match /test_livefix/{uid} {
+      allow read: if t_isAdmin() || request.auth.uid == uid;
+      allow write: if t_active() &amp;&amp; request.auth.uid == uid;
     }
 
     // ---------- server time check ----------
