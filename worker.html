@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Oneness Worker — copy code</title>
+<style>
+  body{font-family:system-ui,Arial,sans-serif;margin:0;background:#f4f6fb;color:#111}
+  .wrap{max-width:720px;margin:0 auto;padding:16px}
+  h1{font-size:20px;color:#1877F2;margin:12px 0 4px}
+  p{font-size:15px;line-height:1.5;margin:6px 0}
+  .steps{background:#fff;border-radius:12px;padding:14px 16px;margin:12px 0;box-shadow:0 1px 4px rgba(0,0,0,.08)}
+  .steps li{margin:6px 0;font-size:15px}
+  button{width:100%;padding:16px;font-size:18px;font-weight:700;color:#fff;background:#1877F2;border:0;border-radius:12px;margin:10px 0}
+  button:active{background:#145fc2}
+  textarea{width:100%;height:240px;font-family:monospace;font-size:12px;border:1px solid #ccc;border-radius:10px;padding:10px;box-sizing:border-box;background:#fafafa}
+  .ok{color:#0a7d2c;font-weight:700;text-align:center;min-height:22px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Oneness Globe — free Worker code</h1>
+  <p>This is the free backend code (distance + journey check). No card, no secrets.</p>
+  <div class="steps">
+    <ol>
+      <li>Tap <b>Copy code</b> below.</li>
+      <li>In Cloudflare: <b>Create Worker</b> &rarr; name it <b>oneness-backend</b> &rarr; <b>Deploy</b>.</li>
+      <li>Tap <b>Edit code</b>, select all, delete, then <b>paste</b> this.</li>
+      <li>Tap <b>Deploy</b> again.</li>
+      <li>Send me the URL it shows (like <i>oneness-backend.globeoneness.workers.dev</i>).</li>
+    </ol>
+  </div>
+  <button onclick="copyCode()">Copy code</button>
+  <div class="ok" id="ok"></div>
+  <textarea id="code" readonly>// Oneness Globe — free Cloudflare Worker backend.
+//
+// Two jobs, both on Cloudflare&#x27;s free tier (no credit card, no Google billing):
+//   GET  /distance?from=..&amp;to=..   -&gt; road distance via free OpenStreetMap
+//   POST /verify-journey           -&gt; compare a TA/DA claim to 30-day GPS history
+//
+// Security: /verify-journey requires the caller&#x27;s Firebase ID token. The Worker
+// reads the GPS history straight from Firestore WITH THAT TOKEN, so Firestore
+// security rules decide what the caller may see (HR/admins only). No service
+// account key is stored here. For tamper-proof verification you can later switch
+// to a Firebase Admin service account + a rule that blocks clients from writing
+// `journeyVerification` (see JOURNEY_VERIFICATION_SETUP.md).
+
+const UA = &#x27;OnenessGlobe/1.0 (veterinary field app)&#x27;;
+const CORS = {
+  &#x27;Access-Control-Allow-Origin&#x27;: &#x27;*&#x27;,
+  &#x27;Access-Control-Allow-Methods&#x27;: &#x27;GET,POST,OPTIONS&#x27;,
+  &#x27;Access-Control-Allow-Headers&#x27;: &#x27;Content-Type,Authorization&#x27;,
+};
+
+export default {
+  async fetch(request) {
+    if (request.method === &#x27;OPTIONS&#x27;) return new Response(null, { headers: CORS });
+    const url = new URL(request.url);
+    try {
+      if (url.pathname === &#x27;/distance&#x27;) return await distance(url);
+      if (url.pathname === &#x27;/verify-journey&#x27; &amp;&amp; request.method === &#x27;POST&#x27;) {
+        return await verifyJourney(request);
+      }
+      return json({ error: &#x27;not found&#x27; }, 404);
+    } catch (e) {
+      return json({ error: `${e}` }, 500);
+    }
+  },
+};
+
+function json(obj, status = 200) {
+  return new Response(JSON.stringify(obj), {
+    status,
+    headers: { &#x27;Content-Type&#x27;: &#x27;application/json&#x27;, ...CORS },
+  });
+}
+
+// ---------- free OpenStreetMap distance ----------
+async function geocode(q) {
+  if (!q || !q.trim()) return null;
+  let query = q.trim();
+  if (!query.toLowerCase().includes(&#x27;bangladesh&#x27;)) query += &#x27;, Bangladesh&#x27;;
+  const u = `https://nominatim.openstreetmap.org/search?format=json&amp;limit=1&amp;countrycodes=bd&amp;q=${encodeURIComponent(query)}`;
+  const r = await fetch(u, { headers: { &#x27;User-Agent&#x27;: UA } });
+  if (!r.ok) return null;
+  const list = await r.json();
+  if (!list.length) return null;
+  return { lat: parseFloat(list[0].lat), lng: parseFloat(list[0].lon) };
+}
+
+async function distance(url) {
+  const from = url.searchParams.get(&#x27;from&#x27;);
+  const to = url.searchParams.get(&#x27;to&#x27;);
+  const a = await geocode(from);
+  const b = await geocode(to);
+  if (!a) return json({ error: &#x27;from_not_found&#x27; }, 422);
+  if (!b) return json({ error: &#x27;to_not_found&#x27; }, 422);
+  const ru = `https://router.project-osrm.org/route/v1/driving/${a.lng},${a.lat};${b.lng},${b.lat}?overview=false`;
+  const rr = await fetch(ru, { headers: { &#x27;User-Agent&#x27;: UA } });
+  if (!rr.ok) return json({ error: &#x27;route_service_busy&#x27; }, 503);
+  const j = await rr.json();
+  const route = (j.routes || [])[0];
+  if (!route) return json({ error: &#x27;no_route&#x27; }, 422);
+  return json({
+    km: Math.round((route.distance / 1000) * 10) / 10,
+    originLat: a.lat, originLng: a.lng, destLat: b.lat, destLng: b.lng,
+  });
+}
+
+// ---------- journey verification ----------
+function metres(lat1, lng1, lat2, lng2) {
+  const R = 6371000, rad = (d) =&gt; (d * Math.PI) / 180;
+  const dLat = rad(lat2 - lat1), dLng = rad(lng2 - lng1);
+  const x = Math.sin(dLat / 2) ** 2 +
+    Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+}
+
+async function verifyJourney(request) {
+  const body = await request.json();
+  const idToken = (request.headers.get(&#x27;Authorization&#x27;) || &#x27;&#x27;).replace(&#x27;Bearer &#x27;, &#x27;&#x27;).trim()
+    || body.idToken;
+  const { projectId, prefix = &#x27;&#x27;, claim } = body;
+  if (!idToken) return json({ error: &#x27;missing_token&#x27; }, 401);
+  if (!projectId || !claim) return json({ error: &#x27;missing_params&#x27; }, 400);
+
+  const { userId, day, originLat, originLng, destLat, destLng } = claim;
+  if (originLat == null || destLat == null) {
+    return json({ status: &#x27;insufficient&#x27;, reason: &#x27;Claim has no From/To map points to check.&#x27;, nearFrom: 0, nearTo: 0, points: 0 });
+  }
+
+  // Read this employee&#x27;s GPS points for the day, using the caller&#x27;s token so
+  // Firestore rules apply.
+  const q = {
+    structuredQuery: {
+      from: [{ collectionId: `${prefix}location_history` }],
+      where: {
+        compositeFilter: {
+          op: &#x27;AND&#x27;,
+          filters: [
+            { fieldFilter: { field: { fieldPath: &#x27;userId&#x27; }, op: &#x27;EQUAL&#x27;, value: { stringValue: userId } } },
+            { fieldFilter: { field: { fieldPath: &#x27;day&#x27; }, op: &#x27;EQUAL&#x27;, value: { stringValue: day } } },
+          ],
+        },
+      },
+    },
+  };
+  const r = await fetch(
+    `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents:runQuery`,
+    { method: &#x27;POST&#x27;, headers: { Authorization: `Bearer ${idToken}`, &#x27;Content-Type&#x27;: &#x27;application/json&#x27; }, body: JSON.stringify(q) });
+  if (!r.ok) return json({ error: &#x27;firestore_read_failed&#x27;, detail: await r.text() }, 502);
+  const rows = await r.json();
+  const pts = rows.filter((x) =&gt; x.document).map((x) =&gt; {
+    const f = x.document.fields;
+    return { lat: +f.lat.doubleValue, lng: +f.lng.doubleValue, acc: f.acc ? +f.acc.doubleValue : 0 };
+  });
+  if (!pts.length) {
+    return json({ status: &#x27;insufficient&#x27;, reason: &#x27;No GPS journey recorded for this day.&#x27;, nearFrom: 0, nearTo: 0, points: 0 });
+  }
+
+  let nearFrom = 0, nearTo = 0;
+  for (const p of pts) {
+    const tol = 500 + (p.acc || 0);
+    if (metres(p.lat, p.lng, originLat, originLng) &lt;= tol) nearFrom++;
+    if (metres(p.lat, p.lng, destLat, destLng) &lt;= tol) nearTo++;
+  }
+  let status, reason;
+  if (nearFrom &gt; 0 &amp;&amp; nearTo &gt; 0) { status = &#x27;verified&#x27;; reason = &#x27;GPS shows the employee near both From and To on this day.&#x27;; }
+  else if (nearFrom &gt; 0 || nearTo &gt; 0) { status = &#x27;partial&#x27;; reason = `GPS matches only ${nearFrom &gt; 0 ? &#x27;the From&#x27; : &#x27;the To&#x27;} place.`; }
+  else { status = &#x27;mismatch&#x27;; reason = &#x27;GPS was recorded but not near the claimed places.&#x27;; }
+  return json({ status, reason, nearFrom, nearTo, points: pts.length });
+}
+</textarea>
+</div>
+<script>
+function copyCode(){
+  var t=document.getElementById('code');
+  t.focus();t.select();t.setSelectionRange(0,999999);
+  var done=function(){document.getElementById('ok').textContent='\u2713 Copied! Now paste it in Cloudflare.';};
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(t.value).then(done,function(){document.execCommand('copy');done();});
+  }else{document.execCommand('copy');done();}
+}
+</script>
+</body>
+</html>
