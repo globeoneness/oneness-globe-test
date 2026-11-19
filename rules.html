@@ -31,6 +31,10 @@ service cloud.firestore {
       return request.resource.data.diff(resource.data).affectedKeys()
         .hasOnly([&#x27;status&#x27;, &#x27;decidedBy&#x27;, &#x27;decidedAt&#x27;]);
     }
+    function onlyVerification() {
+      return request.resource.data.diff(resource.data).affectedKeys()
+        .hasOnly([&#x27;journeyVerification&#x27;]);
+    }
 
     // ---------- setup &amp; settings ----------
     match /meta/setup { allow read: if true; allow create: if signedIn() &amp;&amp; notSetUp(); }
@@ -66,8 +70,8 @@ service cloud.firestore {
     }
 
     // ---------- dealers &amp; doctors ----------
-    match /dealers/{id} { allow read: if active(); allow write: if can(&#x27;manage_dealers&#x27;); }
-    match /doctors/{id} { allow read: if active(); allow write: if can(&#x27;manage_doctors&#x27;); }
+    match /dealers/{id} { allow read: if isAdmin(); allow write: if can(&#x27;manage_dealers&#x27;); }
+    match /doctors/{id} { allow read: if isAdmin(); allow write: if can(&#x27;manage_doctors&#x27;); }
 
     // ---------- duty records &amp; photos (cannot be edited or deleted) ----------
     match /events/{id} {
@@ -78,18 +82,35 @@ service cloud.firestore {
     match /photos/{id} {
       allow read: if isAdmin() || isOwner();
       allow create: if active() &amp;&amp; own();
-      allow update, delete: if false;
+      allow update: if false;
+      // Admins may delete only already-expired photos (in-app auto-cleanup).
+      allow delete: if isAdmin() &amp;&amp; resource.data.expiresAt is timestamp
+                    &amp;&amp; resource.data.expiresAt &lt; request.time;
     }
     match /lastloc/{uid} {
       allow read: if isAdmin() || request.auth.uid == uid;
       allow write: if active() &amp;&amp; request.auth.uid == uid;
     }
 
+    // ---------- 30-day GPS journey history ----------
+    // Each point is written by the employee&#x27;s own device; HR/admins read it.
+    // Clients cannot edit or delete a point — old points auto-expire via the
+    // expiresAt field + a Firestore TTL policy (see JOURNEY_VERIFICATION_SETUP).
+    match /location_history/{id} {
+      allow read: if isAdmin() || isOwner();
+      allow create: if active() &amp;&amp; own();
+      allow update: if false;
+      // Admins may delete only already-expired points (in-app auto-cleanup).
+      allow delete: if isAdmin() &amp;&amp; resource.data.expiresAt is timestamp
+                    &amp;&amp; resource.data.expiresAt &lt; request.time;
+    }
+
     // ---------- travel fares &amp; leave ----------
     match /expenses/{id} {
       allow read: if isAdmin() || isOwner();
       allow create: if active() &amp;&amp; own() &amp;&amp; request.resource.data.status == &#x27;pending&#x27;;
-      allow update: if can(&#x27;approve_ta&#x27;) &amp;&amp; onlyStatusChange() &amp;&amp; resource.data.userId != request.auth.uid;
+      allow update: if can(&#x27;approve_ta&#x27;) &amp;&amp; resource.data.userId != request.auth.uid
+                    &amp;&amp; (onlyStatusChange() || onlyVerification());
       allow delete: if false;
     }
     match /leaves/{id} {
@@ -102,7 +123,10 @@ service cloud.firestore {
     // ---------- activity log (only full-access admins can read; nobody can edit) ----------
     match /logs/{id} {
       allow read: if isFull();
-      allow create: if signedIn() &amp;&amp; request.resource.data.by == request.auth.uid;
+      // Only real, active employees can write logs (stops junk/quota abuse from
+      // stray accounts). The setup window is still allowed so first-run works.
+      allow create: if (active() || (signedIn() &amp;&amp; notSetUp()))
+                    &amp;&amp; request.resource.data.by == request.auth.uid;
       allow update, delete: if false;
     }
 
@@ -119,7 +143,8 @@ service cloud.firestore {
     match /orders/{id} {
       allow read: if isAdmin() || isOwner();
       allow create: if active() &amp;&amp; own() &amp;&amp; request.resource.data.status == &#x27;pending&#x27;;
-      allow update: if request.resource.data.diff(resource.data).affectedKeys()
+      allow update: if resource.data.userId != request.auth.uid
+        &amp;&amp; request.resource.data.diff(resource.data).affectedKeys()
           .hasOnly([&#x27;status&#x27;, &#x27;decidedBy&#x27;, &#x27;decidedAt&#x27;, &#x27;history&#x27;])
         &amp;&amp; ((can(&#x27;review_orders&#x27;) &amp;&amp; resource.data.status == &#x27;pending&#x27;
               &amp;&amp; request.resource.data.status in [&#x27;reviewed&#x27;, &#x27;rejected&#x27;])
@@ -136,13 +161,15 @@ service cloud.firestore {
     match /collections/{id} {
       allow read: if isAdmin() || isOwner();
       allow create: if active() &amp;&amp; own() &amp;&amp; request.resource.data.status == &#x27;pending&#x27;;
-      allow update: if can(&#x27;approve_collections&#x27;) &amp;&amp; onlyStatusChange();
+      allow update: if can(&#x27;approve_collections&#x27;) &amp;&amp; onlyStatusChange()
+                    &amp;&amp; resource.data.userId != request.auth.uid;
       allow delete: if false;
     }
     match /handovers/{id} {
       allow read: if isAdmin() || isOwner();
       allow create: if active() &amp;&amp; own() &amp;&amp; request.resource.data.status == &#x27;pending&#x27;;
-      allow update: if can(&#x27;approve_collections&#x27;) &amp;&amp; onlyStatusChange();
+      allow update: if can(&#x27;approve_collections&#x27;) &amp;&amp; onlyStatusChange()
+                    &amp;&amp; resource.data.userId != request.auth.uid;
       allow delete: if false;
     }
 
@@ -161,7 +188,9 @@ service cloud.firestore {
 
     // ---------- farmers ----------
     match /farmers/{id} {
-      allow read, create, update: if active();
+      allow read, create: if active();
+      // Only the MPO who added a farmer (or an admin) can edit it.
+      allow update: if active() &amp;&amp; (isAdmin() || resource.data.addedBy == request.auth.uid);
       allow delete: if false;
     }
 
@@ -214,6 +243,10 @@ service cloud.firestore {
       return request.resource.data.diff(resource.data).affectedKeys()
         .hasOnly([&#x27;status&#x27;, &#x27;decidedBy&#x27;, &#x27;decidedAt&#x27;]);
     }
+    function t_onlyVerification() {
+      return request.resource.data.diff(resource.data).affectedKeys()
+        .hasOnly([&#x27;journeyVerification&#x27;]);
+    }
 
     // ---------- setup &amp; settings ----------
     match /test_meta/setup { allow read: if true; allow create: if t_signedIn() &amp;&amp; t_notSetUp(); }
@@ -249,8 +282,8 @@ service cloud.firestore {
     }
 
     // ---------- dealers &amp; doctors ----------
-    match /test_dealers/{id} { allow read: if t_active(); allow write: if t_can(&#x27;manage_dealers&#x27;); }
-    match /test_doctors/{id} { allow read: if t_active(); allow write: if t_can(&#x27;manage_doctors&#x27;); }
+    match /test_dealers/{id} { allow read: if t_isAdmin(); allow write: if t_can(&#x27;manage_dealers&#x27;); }
+    match /test_doctors/{id} { allow read: if t_isAdmin(); allow write: if t_can(&#x27;manage_doctors&#x27;); }
 
     // ---------- duty records &amp; photos (cannot be edited or deleted) ----------
     match /test_events/{id} {
@@ -261,18 +294,30 @@ service cloud.firestore {
     match /test_photos/{id} {
       allow read: if t_isAdmin() || t_isOwner();
       allow create: if t_active() &amp;&amp; t_own();
-      allow update, delete: if false;
+      allow update: if false;
+      allow delete: if t_isAdmin() &amp;&amp; resource.data.expiresAt is timestamp
+                    &amp;&amp; resource.data.expiresAt &lt; request.time;
     }
     match /test_lastloc/{uid} {
       allow read: if t_isAdmin() || request.auth.uid == uid;
       allow write: if t_active() &amp;&amp; request.auth.uid == uid;
     }
 
+    // ---------- 30-day GPS journey history ----------
+    match /test_location_history/{id} {
+      allow read: if t_isAdmin() || t_isOwner();
+      allow create: if t_active() &amp;&amp; t_own();
+      allow update: if false;
+      allow delete: if t_isAdmin() &amp;&amp; resource.data.expiresAt is timestamp
+                    &amp;&amp; resource.data.expiresAt &lt; request.time;
+    }
+
     // ---------- travel fares &amp; leave ----------
     match /test_expenses/{id} {
       allow read: if t_isAdmin() || t_isOwner();
       allow create: if t_active() &amp;&amp; t_own() &amp;&amp; request.resource.data.status == &#x27;pending&#x27;;
-      allow update: if t_can(&#x27;approve_ta&#x27;) &amp;&amp; t_onlyStatusChange() &amp;&amp; resource.data.userId != request.auth.uid;
+      allow update: if t_can(&#x27;approve_ta&#x27;) &amp;&amp; resource.data.userId != request.auth.uid
+                    &amp;&amp; (t_onlyStatusChange() || t_onlyVerification());
       allow delete: if false;
     }
     match /test_leaves/{id} {
@@ -285,7 +330,8 @@ service cloud.firestore {
     // ---------- activity log (only full-access admins can read; nobody can edit) ----------
     match /test_logs/{id} {
       allow read: if t_isFull();
-      allow create: if t_signedIn() &amp;&amp; request.resource.data.by == request.auth.uid;
+      allow create: if (t_active() || (t_signedIn() &amp;&amp; t_notSetUp()))
+                    &amp;&amp; request.resource.data.by == request.auth.uid;
       allow update, delete: if false;
     }
 
@@ -302,7 +348,8 @@ service cloud.firestore {
     match /test_orders/{id} {
       allow read: if t_isAdmin() || t_isOwner();
       allow create: if t_active() &amp;&amp; t_own() &amp;&amp; request.resource.data.status == &#x27;pending&#x27;;
-      allow update: if request.resource.data.diff(resource.data).affectedKeys()
+      allow update: if resource.data.userId != request.auth.uid
+        &amp;&amp; request.resource.data.diff(resource.data).affectedKeys()
           .hasOnly([&#x27;status&#x27;, &#x27;decidedBy&#x27;, &#x27;decidedAt&#x27;, &#x27;history&#x27;])
         &amp;&amp; ((t_can(&#x27;review_orders&#x27;) &amp;&amp; resource.data.status == &#x27;pending&#x27;
               &amp;&amp; request.resource.data.status in [&#x27;reviewed&#x27;, &#x27;rejected&#x27;])
@@ -319,13 +366,15 @@ service cloud.firestore {
     match /test_collections/{id} {
       allow read: if t_isAdmin() || t_isOwner();
       allow create: if t_active() &amp;&amp; t_own() &amp;&amp; request.resource.data.status == &#x27;pending&#x27;;
-      allow update: if t_can(&#x27;approve_collections&#x27;) &amp;&amp; t_onlyStatusChange();
+      allow update: if t_can(&#x27;approve_collections&#x27;) &amp;&amp; t_onlyStatusChange()
+                    &amp;&amp; resource.data.userId != request.auth.uid;
       allow delete: if false;
     }
     match /test_handovers/{id} {
       allow read: if t_isAdmin() || t_isOwner();
       allow create: if t_active() &amp;&amp; t_own() &amp;&amp; request.resource.data.status == &#x27;pending&#x27;;
-      allow update: if t_can(&#x27;approve_collections&#x27;) &amp;&amp; t_onlyStatusChange();
+      allow update: if t_can(&#x27;approve_collections&#x27;) &amp;&amp; t_onlyStatusChange()
+                    &amp;&amp; resource.data.userId != request.auth.uid;
       allow delete: if false;
     }
 
@@ -344,7 +393,8 @@ service cloud.firestore {
 
     // ---------- farmers ----------
     match /test_farmers/{id} {
-      allow read, create, update: if t_active();
+      allow read, create: if t_active();
+      allow update: if t_active() &amp;&amp; (t_isAdmin() || resource.data.addedBy == request.auth.uid);
       allow delete: if false;
     }
 
