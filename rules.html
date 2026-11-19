@@ -70,8 +70,8 @@ service cloud.firestore {
     }
 
     // ---------- dealers &amp; doctors ----------
-    match /dealers/{id} { allow read: if isAdmin(); allow write: if can(&#x27;manage_dealers&#x27;); }
-    match /doctors/{id} { allow read: if isAdmin(); allow write: if can(&#x27;manage_doctors&#x27;); }
+    match /dealers/{id} { allow read: if active(); allow write: if can(&#x27;manage_dealers&#x27;); }
+    match /doctors/{id} { allow read: if active(); allow write: if can(&#x27;manage_doctors&#x27;); }
 
     // ---------- duty records &amp; photos (cannot be edited or deleted) ----------
     match /events/{id} {
@@ -282,8 +282,8 @@ service cloud.firestore {
     }
 
     // ---------- dealers &amp; doctors ----------
-    match /test_dealers/{id} { allow read: if t_isAdmin(); allow write: if t_can(&#x27;manage_dealers&#x27;); }
-    match /test_doctors/{id} { allow read: if t_isAdmin(); allow write: if t_can(&#x27;manage_doctors&#x27;); }
+    match /test_dealers/{id} { allow read: if t_active(); allow write: if t_can(&#x27;manage_dealers&#x27;); }
+    match /test_doctors/{id} { allow read: if t_active(); allow write: if t_can(&#x27;manage_doctors&#x27;); }
 
     // ---------- duty records &amp; photos (cannot be edited or deleted) ----------
     match /test_events/{id} {
