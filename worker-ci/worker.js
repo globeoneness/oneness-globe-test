@@ -136,3 +136,5 @@ async function verifyJourney(request) {
   else { status = 'mismatch'; reason = 'GPS was recorded but not near the claimed places.'; }
   return json({ status, reason, nearFrom, nearTo, points: pts.length });
 }
+
+// deploy: trigger Workers Build 20261120T002016Z
